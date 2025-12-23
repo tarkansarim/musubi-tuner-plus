@@ -8,6 +8,8 @@ from accelerate import Accelerator
 
 from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_Z_IMAGE, ARCHITECTURE_Z_IMAGE_FULL
 from musubi_tuner.zimage import zimage_model, zimage_utils, zimage_autoencoder, zimage_config
+from musubi_tuner.utils import multi_gpu_util as multi_gpu
+from musubi_tuner.utils.multi_gpu_trainer import MultiGPUTrainer
 from musubi_tuner.hv_train_network import (
     NetworkTrainer,
     load_prompts,
@@ -349,8 +351,17 @@ def main():
     if args.vae_dtype is not None:
         logger.warning("vae_dtype is not used in Z-Image architecture (always float32)")
 
-    trainer = ZImageNetworkTrainer()
-    trainer.train(args)
+    # Check if multi-GPU training is requested
+    if args.multi_gpu:
+        if multi_gpu.is_enabled():
+            trainer = ZImageNetworkTrainer()
+            trainer.train(args)
+        else:
+            multi_gpu_trainer = MultiGPUTrainer(device_indexes=args.device_indexes)
+            multi_gpu_trainer.train(ZImageNetworkTrainer, args)
+    else:
+        trainer = ZImageNetworkTrainer()
+        trainer.train(args)
 
 
 if __name__ == "__main__":

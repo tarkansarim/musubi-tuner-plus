@@ -9,6 +9,8 @@ from accelerate import Accelerator
 
 from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_FLUX_KONTEXT, ARCHITECTURE_FLUX_KONTEXT_FULL
 from musubi_tuner.flux import flux_models, flux_utils
+from musubi_tuner.utils import multi_gpu_util as multi_gpu
+from musubi_tuner.utils.multi_gpu_trainer import MultiGPUTrainer
 from musubi_tuner.hv_train_network import (
     NetworkTrainer,
     load_prompts,
@@ -402,8 +404,17 @@ def main():
     if args.vae_dtype is None:
         args.vae_dtype = "bfloat16"  # make bfloat16 as default for VAE
 
-    trainer = FluxKontextNetworkTrainer()
-    trainer.train(args)
+    # Check if multi-GPU training is requested
+    if args.multi_gpu:
+        if multi_gpu.is_enabled():
+            trainer = FluxKontextNetworkTrainer()
+            trainer.train(args)
+        else:
+            multi_gpu_trainer = MultiGPUTrainer(device_indexes=args.device_indexes)
+            multi_gpu_trainer.train(FluxKontextNetworkTrainer, args)
+    else:
+        trainer = FluxKontextNetworkTrainer()
+        trainer.train(args)
 
 
 if __name__ == "__main__":

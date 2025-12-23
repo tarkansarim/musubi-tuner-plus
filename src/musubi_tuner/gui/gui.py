@@ -782,71 +782,56 @@ num_repeats = 1
                 arch_name = "qwen_image"
 
             # Construct command for cmd /c to run and then pause
-            # We assume 'accelerate' is in the PATH.
             script_path = os.path.join("src", "musubi_tuner", f"{arch_name}_train_network.py")
 
-            # Inner command list - arguments for accelerate launch
-            inner_cmd = [
-                "accelerate",
-                "launch",
-                # accelerate args: we don't configure default_config.yaml, so we need to specify all here
-                "--num_cpu_threads_per_process",
-                "1",
-                "--mixed_precision",
-                prec,
-                "--dynamo_backend=no",
-                "--gpu_ids",
-                "all",
-                "--machine_rank",
-                "0",
-                "--main_training_function",
-                "main",
-                "--num_machines",
-                "1",
-                "--num_processes",
-                "1",
-                # script and its args
-                script_path,
-                "--dit",
-                dit,
-                "--vae",
-                vae,
-                "--text_encoder",
-                te1,
-                "--dataset_config",
-                dataset_config,
-                "--output_dir",
-                output_dir,
-                "--output_name",
-                output_nm,
-                "--network_module",
-                f"networks.lora_{arch_name}",
-                "--network_dim",
-                str(int(dim)),
-                "--optimizer_type",
-                "adamw8bit",
-                "--learning_rate",
-                str(lr),
-                "--max_train_epochs",
-                str(int(epochs)),
-                "--save_every_n_epochs",
-                str(int(save_n)),
-                "--timestep_sampling",
-                "shift",
-                "--weighting_scheme",
-                "none",
-                "--discrete_flow_shift",
-                str(flow_shift),
-                "--max_data_loader_n_workers",
-                "2",
+            # Check if multi-GPU is available
+            import torch
+            num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            use_multi_gpu = num_gpus > 1
+
+            # Common script arguments
+            script_args = [
+                "--dit", dit,
+                "--vae", vae,
+                "--text_encoder", te1,
+                "--dataset_config", dataset_config,
+                "--output_dir", output_dir,
+                "--output_name", output_nm,
+                "--network_module", f"networks.lora_{arch_name}",
+                "--network_dim", str(int(dim)),
+                "--optimizer_type", "adamw8bit",
+                "--learning_rate", str(lr),
+                "--max_train_epochs", str(int(epochs)),
+                "--save_every_n_epochs", str(int(save_n)),
+                "--timestep_sampling", "shift",
+                "--weighting_scheme", "none",
+                "--discrete_flow_shift", str(flow_shift),
+                "--max_data_loader_n_workers", "2",
                 "--persistent_data_loader_workers",
-                "--seed",
-                "42",
-                "--logging_dir",
-                logging_dir,
-                "--log_with",
-                "tensorboard",
+                "--seed", "42",
+                "--logging_dir", logging_dir,
+                "--log_with", "tensorboard",
             ]
+
+            # Inner command list - use gloo-based multi-GPU or accelerate
+            if use_multi_gpu:
+                # Use gloo-based multi-GPU training
+                inner_cmd = ["python", script_path, "--multi_gpu"] + script_args
+            else:
+                # Use accelerate for single-GPU
+                inner_cmd = [
+                    "accelerate",
+                    "launch",
+                    "--num_cpu_threads_per_process", "1",
+                    "--mixed_precision", prec,
+                    "--dynamo_backend=no",
+                    "--gpu_ids", "all",
+                    "--machine_rank", "0",
+                    "--main_training_function", "main",
+                    "--num_machines", "1",
+                    "--num_processes", "1",
+                    script_path,
+                ] + script_args
 
             # Sample image generation options
             if should_sample_images:

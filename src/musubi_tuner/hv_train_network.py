@@ -50,9 +50,22 @@ from musubi_tuner.hv_generate_video import save_images_grid, save_videos_grid, r
 import logging
 
 from musubi_tuner.utils import huggingface_utils, model_utils, train_utils, sai_model_spec
+from musubi_tuner.utils.multi_gpu_accelerator import MultiGPUAccelerator
+from musubi_tuner.utils import multi_gpu_util as multi_gpu
+from musubi_tuner.utils.multi_gpu_trainer import MultiGPUTrainer
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+# Windows console often uses a legacy codepage which can crash on non-ASCII logs.
+# Force UTF-8 with replacement to keep training from dying on harmless log messages.
+if os.name == "nt":
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 
 SS_METADATA_KEY_BASE_MODEL_VERSION = "ss_base_model_version"
@@ -104,8 +117,11 @@ class collator_class:
         return examples[0]  # batch size is always 1, so we unwrap it here
 
 
-def prepare_accelerator(args: argparse.Namespace) -> Accelerator:
+def prepare_accelerator(args: argparse.Namespace):
     """
+    Prepare accelerator for training.
+    Returns Accelerator for single-GPU or accelerate-based multi-GPU,
+    or MultiGPUAccelerator for gloo-based multi-GPU training.
     DeepSpeed is not supported in this script currently.
     """
     if args.logging_dir is None:
@@ -136,6 +152,23 @@ def prepare_accelerator(args: argparse.Namespace) -> Accelerator:
                 os.environ["WANDB_DIR"] = logging_dir
             if args.wandb_api_key is not None:
                 wandb.login(key=args.wandb_api_key)
+
+    # Check if multi-GPU mode is requested
+    if args.multi_gpu:
+        # Check if distributed training is already initialized
+        if multi_gpu.is_enabled():
+            # Already in a spawned process, create MultiGPUAccelerator
+            device = getattr(args, "_multi_gpu_device", torch.device(f"cuda:{multi_gpu.rank()}"))
+            return MultiGPUAccelerator(
+                device=device,
+                mixed_precision=args.mixed_precision if args.mixed_precision else None,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                log_with=log_with,
+                project_dir=logging_dir,
+            )
+        else:
+            # Not yet initialized - will be handled by MultiGPUTrainer
+            return None
 
     kwargs_handlers = [
         (
@@ -957,6 +990,8 @@ class NetworkTrainer:
                 else:
                     t = torch.stack(available_t, dim=0)  # [batch_size, ]
 
+            # Ensure timestep tensor is on the same device as latents/noise (important for multi-GPU)
+            t = t.to(device=device, dtype=dtype)
             timesteps = t * 1000.0
             t = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
             noisy_model_input = (1 - t) * latents + t * noise
@@ -1876,6 +1911,18 @@ class NetworkTrainer:
             accelerator.print(
                 f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
             )
+        # OneTrainer-style multi-GPU step semantics (gloo path):
+        # If the user specified max_train_steps for single-GPU, keep the *total sample budget* constant when using
+        # multiple GPUs by scaling per-process steps down by world size.
+        if getattr(args, "_multi_gpu", False) and getattr(accelerator, "num_processes", 1) > 1 and args.max_train_epochs is None:
+            world = int(getattr(accelerator, "num_processes", 1))
+            original_steps = int(args.max_train_steps)
+            scaled_steps = math.ceil(original_steps / world)
+            if scaled_steps != original_steps:
+                accelerator.print(
+                    f"multi-gpu: scaling max_train_steps {original_steps} -> {scaled_steps} (world_size={world})"
+                )
+                args.max_train_steps = scaled_steps
 
         # send max_train_steps to train_dataset_group
         train_dataset_group.set_max_train_steps(args.max_train_steps)
@@ -2085,7 +2132,8 @@ class NetworkTrainer:
             )
 
         # TODO skip until initial step
-        progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
+        # Use a manual-total progress bar so we can control refresh behavior (prevents duplicate lines in piped logs).
+        progress_bar = tqdm(total=args.max_train_steps, smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
 
         epoch_to_start = 0
         global_step = 0
@@ -2168,6 +2216,18 @@ class NetworkTrainer:
             accelerator.print(f"\nepoch {epoch + 1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
 
+            # If the (prepared) dataloader uses a DistributedSampler, set epoch for deterministic shuffling.
+            if hasattr(train_dataloader, "set_epoch"):
+                try:
+                    train_dataloader.set_epoch(epoch)
+                except Exception:
+                    pass
+            elif hasattr(getattr(train_dataloader, "sampler", None), "set_epoch"):
+                try:
+                    train_dataloader.sampler.set_epoch(epoch)
+                except Exception:
+                    pass
+
             metadata["ss_epoch"] = str(epoch + 1)
 
             accelerator.unwrap_model(network).on_epoch_start(transformer)
@@ -2210,8 +2270,10 @@ class NetworkTrainer:
                     accelerator.backward(loss)
                     if accelerator.sync_gradients:
                         # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
-                        state = accelerate.PartialState()
-                        if state.distributed_type != accelerate.DistributedType.NO:
+                        # Avoid constructing accelerate.PartialState here: in some environments it may attempt
+                        # to initialize torch.distributed again. For multi-GPU we only need to know whether
+                        # we're running with >1 process.
+                        if getattr(accelerator, "num_processes", 1) > 1:
                             for param in network.parameters():
                                 if param.grad is not None:
                                     param.grad = accelerator.reduce(param.grad, reduction="mean")
@@ -2232,10 +2294,21 @@ class NetworkTrainer:
                 else:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
 
+                current_loss = loss.detach().item()
+                loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+                avr_loss: float = loss_recorder.moving_average
+                logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     if global_step == 0:
-                        progress_bar.reset()  # exclude first step from progress bar, because it may take long due to initializations
+                        # exclude first step from progress bar, because it may take long due to initializations
+                        progress_bar.reset()
+
+                    # Only one refresh/print per step:
+                    # set_postfix(refresh=False) + update() (which refreshes) avoids duplicate lines in piped logs.
+                    postfix_logs = {**max_mean_logs, **logs} if args.scale_weight_norms else logs
+                    progress_bar.set_postfix(**postfix_logs, refresh=False)
                     progress_bar.update(1)
                     global_step += 1
 
@@ -2262,15 +2335,6 @@ class NetworkTrainer:
                                     remove_ckpt_name = train_utils.get_step_ckpt_name(args.output_name, remove_step_no)
                                     remove_model(remove_ckpt_name)
                         optimizer_train_fn()
-
-                current_loss = loss.detach().item()
-                loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
-                avr_loss: float = loss_recorder.moving_average
-                logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
-                progress_bar.set_postfix(**logs)
-
-                if args.scale_weight_norms:
-                    progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
                 if len(accelerator.trackers) > 0:
                     logs = self.generate_step_logs(
@@ -2538,6 +2602,20 @@ def setup_parser_common() -> argparse.ArgumentParser:
         "--ddp_static_graph",
         action="store_true",
         help="enable static_graph for DDP / DDPでstatic_graphを有効にする",
+    )
+    parser.add_argument(
+        "--multi_gpu",
+        action="store_true",
+        help="Enable multi-GPU training using gloo backend (Windows) or nccl backend (Linux). "
+        "If not specified, uses accelerate for single-GPU or multi-GPU training. "
+        "When enabled, automatically detects multiple GPUs and uses gloo/nccl for distributed training.",
+    )
+    parser.add_argument(
+        "--device_indexes",
+        type=str,
+        default=None,
+        help="Comma-separated list of GPU device indices for multi-GPU training (e.g., '0,1'). "
+        "If not specified, uses all available GPUs. Only effective when --multi_gpu is enabled.",
     )
 
     parser.add_argument(
@@ -3070,8 +3148,21 @@ def main():
 
     args.fp8_scaled = False  # HunyuanVideo does not support this yet
 
-    trainer = NetworkTrainer()
-    trainer.train(args)
+    # Check if multi-GPU training is requested
+    if args.multi_gpu:
+        # Check if we're already in a spawned process
+        if multi_gpu.is_enabled():
+            # Already in a spawned process, run training normally
+            trainer = NetworkTrainer()
+            trainer.train(args)
+        else:
+            # Spawn processes for multi-GPU training
+            multi_gpu_trainer = MultiGPUTrainer(device_indexes=args.device_indexes)
+            multi_gpu_trainer.train(NetworkTrainer, args)
+    else:
+        # Single-GPU or accelerate-based multi-GPU training
+        trainer = NetworkTrainer()
+        trainer.train(args)
 
 
 if __name__ == "__main__":

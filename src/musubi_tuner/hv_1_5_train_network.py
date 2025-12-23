@@ -27,6 +27,8 @@ from musubi_tuner.hunyuan_video_1_5.hunyuan_video_1_5_models import (
     detect_hunyuan_video_1_5_sd_dtype,
 )
 from musubi_tuner.hunyuan_video_1_5.hunyuan_video_1_5_vae import VAE_LATENT_CHANNELS
+from musubi_tuner.utils import multi_gpu_util as multi_gpu
+from musubi_tuner.utils.multi_gpu_trainer import MultiGPUTrainer
 from musubi_tuner.hv_train_network import (
     NetworkTrainer,
     clean_memory_on_device,
@@ -496,8 +498,17 @@ def main():
     args = parser.parse_args()
     args = read_config_from_file(args, parser)
 
-    trainer = HunyuanVideo15NetworkTrainer()
-    trainer.train(args)
+    # Check if multi-GPU training is requested
+    if args.multi_gpu:
+        if multi_gpu.is_enabled():
+            trainer = HunyuanVideo15NetworkTrainer()
+            trainer.train(args)
+        else:
+            multi_gpu_trainer = MultiGPUTrainer(device_indexes=args.device_indexes)
+            multi_gpu_trainer.train(HunyuanVideo15NetworkTrainer, args)
+    else:
+        trainer = HunyuanVideo15NetworkTrainer()
+        trainer.train(args)
 
 
 if __name__ == "__main__":

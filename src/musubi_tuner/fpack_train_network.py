@@ -21,6 +21,8 @@ from musubi_tuner.frame_pack.hunyuan_video_packed import HunyuanVideoTransformer
 from musubi_tuner.frame_pack.k_diffusion_hunyuan import sample_hunyuan
 from musubi_tuner.frame_pack.utils import crop_or_pad_yield_mask
 from musubi_tuner.dataset.image_video_dataset import resize_image_to_bucket
+from musubi_tuner.utils import multi_gpu_util as multi_gpu
+from musubi_tuner.utils.multi_gpu_trainer import MultiGPUTrainer
 from musubi_tuner.hv_train_network import (
     NetworkTrainer,
     load_prompts,
@@ -629,8 +631,17 @@ def main():
     args.dit_dtype = "bfloat16"  # fixed
     args.sample_solver = "unipc"  # for sample generation, fixed to unipc
 
-    trainer = FramePackNetworkTrainer()
-    trainer.train(args)
+    # Check if multi-GPU training is requested
+    if args.multi_gpu:
+        if multi_gpu.is_enabled():
+            trainer = FramePackNetworkTrainer()
+            trainer.train(args)
+        else:
+            multi_gpu_trainer = MultiGPUTrainer(device_indexes=args.device_indexes)
+            multi_gpu_trainer.train(FramePackNetworkTrainer, args)
+    else:
+        trainer = FramePackNetworkTrainer()
+        trainer.train(args)
 
 
 if __name__ == "__main__":

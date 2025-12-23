@@ -17,6 +17,8 @@ from musubi_tuner.hv_train_network import (
     setup_parser_common,
     read_config_from_file,
 )
+from musubi_tuner.utils import multi_gpu_util as multi_gpu
+from musubi_tuner.utils.multi_gpu_trainer import MultiGPUTrainer
 from musubi_tuner.utils.device_utils import synchronize_device
 from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscreteScheduler
 from musubi_tuner.wan_generate_video import parse_one_frame_inference_args
@@ -756,8 +758,21 @@ def main():
     if args.vae_dtype is None:
         args.vae_dtype = "bfloat16"  # make bfloat16 as default for VAE
 
-    trainer = WanNetworkTrainer()
-    trainer.train(args)
+    # Check if multi-GPU training is requested
+    if args.multi_gpu:
+        # Check if we're already in a spawned process
+        if multi_gpu.is_enabled():
+            # Already in a spawned process, run training normally
+            trainer = WanNetworkTrainer()
+            trainer.train(args)
+        else:
+            # Spawn processes for multi-GPU training
+            multi_gpu_trainer = MultiGPUTrainer(device_indexes=args.device_indexes)
+            multi_gpu_trainer.train(WanNetworkTrainer, args)
+    else:
+        # Single-GPU or accelerate-based multi-GPU training
+        trainer = WanNetworkTrainer()
+        trainer.train(args)
 
 
 if __name__ == "__main__":

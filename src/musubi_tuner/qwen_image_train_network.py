@@ -15,6 +15,8 @@ from musubi_tuner.dataset.image_video_dataset import (
     ARCHITECTURE_QWEN_IMAGE_EDIT_FULL,
 )
 from musubi_tuner.qwen_image import qwen_image_autoencoder_kl, qwen_image_model, qwen_image_utils
+from musubi_tuner.utils import multi_gpu_util as multi_gpu
+from musubi_tuner.utils.multi_gpu_trainer import MultiGPUTrainer
 from musubi_tuner.hv_train_network import (
     NetworkTrainer,
     load_prompts,
@@ -504,8 +506,17 @@ def main():
     if args.vae_dtype is None:
         args.vae_dtype = "bfloat16"  # make bfloat16 as default for VAE, this should be checked
 
-    trainer = QwenImageNetworkTrainer()
-    trainer.train(args)
+    # Check if multi-GPU training is requested
+    if args.multi_gpu:
+        if multi_gpu.is_enabled():
+            trainer = QwenImageNetworkTrainer()
+            trainer.train(args)
+        else:
+            multi_gpu_trainer = MultiGPUTrainer(device_indexes=args.device_indexes)
+            multi_gpu_trainer.train(QwenImageNetworkTrainer, args)
+    else:
+        trainer = QwenImageNetworkTrainer()
+        trainer.train(args)
 
 
 if __name__ == "__main__":
