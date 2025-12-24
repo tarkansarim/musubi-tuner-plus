@@ -49,3 +49,4 @@ echo Dual-GPU training complete! LoRA weights in outputs\test_wan_lora_dual_gpu\
 echo Run: tensorboard --logdir logs\test_wan_dual_gpu to view loss.
 pause
 
+

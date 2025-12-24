@@ -13,3 +13,33 @@ GEMINI.md
 AGENTS.md
 .vscode/settings.json
 .mcp.json
+
+# IDE/Editor
+.cursor/
+
+# Datasets and outputs (large files)
+datasets/
+output/
+outputs/
+
+# Temporary documentation and notes
+*.log
+setup.log
+
+# Backup requirements
+requirements.lock.txt
+requirements.lock*.txt
+requirements_backup*.txt
+requirements_final*.txt
+
+# Local configs and samples
+accelerate_config*.yaml
+sample_prompts*.txt
+config_*_example.toml
+
+# Debug/test scripts
+debug_*.py
+split_*.py
+
+# Taskmaster
+.taskmaster/

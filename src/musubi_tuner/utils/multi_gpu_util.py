@@ -111,3 +111,4 @@ def broadcast_parameters(params: list[torch.nn.Parameter], train_device: torch.d
         if not is_master() and gpu_param is not param:
             param.copy_(gpu_param)
 
+
