@@ -44,6 +44,21 @@ split_*.py
 # Taskmaster
 .taskmaster/
 
+# User-specific batch files (not core to the tool)
+*mitch*.bat
+*josh*.bat
+*Mitch*.bat
+*Josh*.bat
+run_smoke_train.bat
+run_dual_gpu_train_mitch_t2v.bat
+batch_files_archive/run_train_*.bat
+batch_files_archive/run_cache_*.bat
+batch_files_archive/run_test_*.bat
+batch_files_archive/run_dual_gpu_train.bat
+batch_files_archive/run_dual_gpu_train_torchrun.bat
+batch_files_archive/run_dual_gpu_separate_models.bat
+batch_files_archive/gui.bat
+
 # Session notes and temporary documentation (root level only)
 /CRITICAL_*.md
 /FINAL_*.md
