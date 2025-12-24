@@ -43,3 +43,15 @@ split_*.py
 
 # Taskmaster
 .taskmaster/
+
+# Session notes and temporary documentation (root level only)
+/CRITICAL_*.md
+/FINAL_*.md
+/GPU_*.md
+/GUI_*.md
+/IMAGE_*.md
+/MITCH_*.md
+/TEST_*.md
+/TRAINING_*.md
+/WEBUI_*.md
+/READFIRST.md
